@@ -108,6 +108,8 @@ fn formula_bar_reads_and_edits_the_merge_anchor_from_a_covered_cell() {
     assert!(editor.from_formula_bar);
     assert_eq!(editor.cell.a1(), "A1");
     assert_eq!(editor.text, "formula bar text");
+    // The click put the caret where it landed, mid-text, as in Excel: type at the end.
+    key(&mut h, Key::End);
     text(&mut h, " edited");
     key(&mut h, Key::Enter);
     assert_eq!(value(&h, "A1"), Value::from("formula bar text edited"));

@@ -348,7 +348,7 @@ fn new_tiles(app: &mut SheetApp, ui: &mut Ui, out: &mut Outcome) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(18.0, 14.0);
         if tile(ui, lang.tr("Blank workbook"), None).clicked() {
-            app.run_or_alert("file.new", json!({}));
+            app.new_blank_workbook();
             out.close = true;
         }
         for (i, (name, title)) in gridcraft_engine::sample::SAMPLES.iter().enumerate() {
@@ -569,6 +569,59 @@ fn home(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome) 
 
 fn new_page(app: &mut SheetApp, ui: &mut Ui, out: &mut Outcome) {
     new_tiles(app, ui, out);
+    ui.add_space(22.0);
+    my_templates(app, ui, out);
+}
+
+/// File › New › My templates: up to six workbooks of the user's own, each opened as an untitled
+/// copy, and one of them (the star) opened at launch and by New Workbook.
+fn my_templates(app: &mut SheetApp, ui: &mut Ui, out: &mut Outcome) {
+    let lang = app.ui.language;
+    section(ui, lang, "My templates");
+    dim(
+        ui,
+        lang.tr("Workbooks you start from. Each opens as a new copy; the one marked Open at start opens when GridCraft starts and for New Workbook."),
+    );
+    ui.add_space(8.0);
+    let mut open = None;
+    let mut remove = None;
+    let mut add = false;
+    // Top-aligned: a template's tile has its controls below it, the Add tile has none.
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
+        ui.spacing_mut().item_spacing = vec2(18.0, 14.0);
+        for path in app.ui.templates.clone() {
+            ui.vertical(|ui| {
+                ui.set_width(150.0);
+                let name = std::path::Path::new(&path).file_stem().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+                if tile(ui, &name, Some(0)).on_hover_text(&path).clicked() {
+                    open = Some(path.clone());
+                }
+                let mut start = app.ui.start_template.as_deref() == Some(path.as_str());
+                if ui.checkbox(&mut start, lang.tr("Open at start")).changed() {
+                    app.ui.start_template = start.then(|| path.clone());
+                }
+                if ui.small_button(lang.tr("Remove")).clicked() {
+                    remove = Some(path.clone());
+                }
+            });
+        }
+        if app.ui.templates.len() < crate::MAX_TEMPLATES && app.services.pick_open.is_some() && tile(ui, lang.tr("Add template…"), None).clicked() {
+            add = true;
+        }
+    });
+    if let Some(path) = remove {
+        app.remove_template(&path);
+    }
+    if add && let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick()) {
+        app.add_template(&path);
+        if app.ui.templates.len() == 1 {
+            app.ui.start_template = Some(path);
+        }
+    }
+    if let Some(path) = open {
+        app.open_template(&path);
+        out.close = true;
+    }
 }
 
 fn open_page(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome) {

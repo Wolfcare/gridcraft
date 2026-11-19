@@ -355,7 +355,7 @@ pub fn show(app: &mut SheetApp, ctx: &egui::Context) {
                     ui.heading("Start a new workbook");
                     ui.horizontal_wrapped(|ui| {
                         if ui.button("Blank workbook").clicked() {
-                            app.run_or_alert("file.new", json!({}));
+                            app.new_blank_workbook();
                             open = false;
                         }
                         for (n, t) in gridcraft_engine::sample::SAMPLES {

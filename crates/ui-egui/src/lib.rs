@@ -97,6 +97,9 @@ fn parse_resize_direction(value: &str) -> Option<egui::ResizeDirection> {
     }
 }
 
+/// How many templates File › New › My templates keeps.
+pub const MAX_TEMPLATES: usize = 6;
+
 /// Persisted UI preferences.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -123,6 +126,12 @@ pub struct UiState {
     /// change. A preference like the rest of this struct — it stays on across restarts (#1901).
     pub autosave: bool,
     pub recent: Vec<String>,
+    /// File › New › My templates: up to [`MAX_TEMPLATES`] workbooks the user keeps as templates.
+    /// Each opens as an untitled copy, so Save asks where to put it and the template stays as is.
+    pub templates: Vec<String>,
+    /// The template GridCraft opens at launch and for New Workbook (Cmd+N), instead of a blank
+    /// Book1; one of `templates`.
+    pub start_template: Option<String>,
     /// One-shot keytip request for a ribbon control: set when a keytip action resolves to
     /// [`keytips::Action::Control`], consumed (and cleared) by the control's render site.
     #[serde(skip)]
@@ -173,6 +182,8 @@ impl Default for UiState {
             highlight_active_row: false,
             autosave: false,
             recent: vec![],
+            templates: vec![],
+            start_template: None,
             keytip_invoke: None,
             keytip_invoke_next: None,
             language: i18n::Language::En,

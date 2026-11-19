@@ -356,6 +356,11 @@ fn main() -> eframe::Result<()> {
         app.session.new_workbook();
     }
     app.after_engine(); // Show warnings from the sample.
+    // With nothing named to open, start from the chosen template (File › New › My templates),
+    // which replaces the untouched blank Book1.
+    if files.is_empty() && sample.is_none() {
+        app.open_start_template();
+    }
     // Files named on the command line (a double-click on Windows and Linux) open as File › Open
     // opens them: a password-protected one asks for its password, and errors are shown, not
     // only logged. Each replaces the untouched blank Book1, as a file opened from Finder does.
