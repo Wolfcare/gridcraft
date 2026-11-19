@@ -61,6 +61,7 @@ fn tree() -> Vec<(&'static str, Vec<Entry>)> {
                 ("New Workbook", "file.new", Some("CMD+N")),
                 ("New from Sample…", "dialog:start", None),
                 ("Open…", "file.open", Some("CMD+O")),
+                ("Open Recent", RECENT_MENU, None),
                 ("-", "", None),
                 ("Close", "file.close", Some("CMD+W")),
                 ("Save", "file.save", Some("CMD+S")),
@@ -240,6 +241,37 @@ pub struct NativeMenu {
     /// The Window menu's window items and what they last showed.
     window_items: Vec<CheckMenuItem>,
     windows: Vec<OpenWindow>,
+    /// File › Open Recent, and the paths it last listed.
+    recent_menu: Option<Submenu>,
+    recent: Option<Vec<String>>,
+}
+
+/// Marks where File › Open Recent goes in [`tree`].
+const RECENT_MENU: &str = "menu:openRecent";
+/// Menu id of the Open Recent item that opens recent workbook `n` (0 = the most recent).
+const RECENT_ITEM: &str = "recent:";
+/// Open Recent › Clear Menu.
+const RECENT_CLEAR: &str = "recent:clear";
+/// How many workbooks Open Recent lists.
+const RECENT_SHOWN: usize = 10;
+
+/// The Open Recent labels for `paths`: the file name, and its folder too where two listed
+/// workbooks share a name.
+fn recent_labels(paths: &[String]) -> Vec<String> {
+    let split = |p: &str| -> (String, String) {
+        let path = std::path::Path::new(p);
+        let name = path.file_name().map_or_else(|| p.to_string(), |n| n.to_string_lossy().into_owned());
+        let folder = path.parent().and_then(|f| f.file_name()).map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        (name, folder)
+    };
+    let parts: Vec<(String, String)> = paths.iter().map(|p| split(p)).collect();
+    parts
+        .iter()
+        .map(|(name, folder)| {
+            let shared = parts.iter().filter(|(other, _)| other == name).count() > 1;
+            if shared && !folder.is_empty() { format!("{name} — {folder}") } else { name.clone() }
+        })
+        .collect()
 }
 
 /// Menu id of the Window menu item that brings workbook `doc` forward.
@@ -279,11 +311,18 @@ impl NativeMenu {
         let _ = menu.append(&app_menu);
         let mut theme_items = Vec::new();
         let mut window_menu = None;
+        let mut recent_menu = None;
         for (title, entries) in tree() {
             let sub = Submenu::new(title, true);
             for (label, id, acc) in entries {
                 if label == "-" {
                     let _ = sub.append(&PredefinedMenuItem::separator());
+                    continue;
+                }
+                if id == RECENT_MENU {
+                    let recent = Submenu::new(label, true);
+                    let _ = sub.append(&recent);
+                    recent_menu = Some(recent);
                     continue;
                 }
                 if id == "view.theme" {
@@ -318,7 +357,7 @@ impl NativeMenu {
             let _ = tx.send(e);
             ctx.request_repaint();
         }));
-        NativeMenu { _menu: menu, events: rx, theme_items, window_menu, window_items: Vec::new(), windows: Vec::new() }
+        NativeMenu { _menu: menu, events: rx, theme_items, window_menu, window_items: Vec::new(), windows: Vec::new(), recent_menu, recent: None }
     }
 
     /// Keeps the Window menu's list of open windows (title, unsaved bullet, active check) in
@@ -351,6 +390,40 @@ impl NativeMenu {
                 item.set_checked(w.active);
             }
         }
+    }
+
+    /// Keeps File › Open Recent in step with the recent workbooks (the Backstage's list).
+    fn sync_recent(&mut self, app: &SheetApp) {
+        let Some(menu) = &self.recent_menu else { return };
+        let paths: Vec<String> = app.ui.recent.iter().take(RECENT_SHOWN).cloned().collect();
+        if self.recent.as_ref() == Some(&paths) {
+            return;
+        }
+        for _ in 0..menu.items().len() {
+            let _ = menu.remove_at(0);
+        }
+        for (i, label) in recent_labels(&paths).into_iter().enumerate() {
+            let _ = menu.append(&MenuItem::with_id(format!("{RECENT_ITEM}{i}"), label, true, None));
+        }
+        if !paths.is_empty() {
+            let _ = menu.append(&PredefinedMenuItem::separator());
+        }
+        let _ = menu.append(&MenuItem::with_id(RECENT_CLEAR, "Clear Menu", !paths.is_empty(), None));
+        self.recent = Some(paths);
+    }
+
+    /// Runs an Open Recent item; false when `id` is not one.
+    fn run_recent(&mut self, app: &mut SheetApp, id: &str) -> bool {
+        if id == RECENT_CLEAR {
+            app.ui.recent.clear();
+            return true;
+        }
+        let Some(n) = id.strip_prefix(RECENT_ITEM).and_then(|n| n.parse::<usize>().ok()) else { return false };
+        // The item opens the path it showed, even if the list has changed since.
+        if let Some(path) = self.recent.as_ref().and_then(|r| r.get(n)).cloned() {
+            app.open_path(&path);
+        }
+        true
     }
 
     /// Runs the chosen menu items. Commands go to the active window, the most recently focused;
@@ -391,6 +464,9 @@ impl NativeMenu {
                     continue;
                 }
             }
+            if self.run_recent(app, &id) {
+                continue;
+            }
             if select_theme(app, &id) {
                 continue;
             }
@@ -426,6 +502,7 @@ impl NativeMenu {
             }
         }
         self.sync_windows(app);
+        self.sync_recent(app);
     }
 }
 
@@ -441,6 +518,20 @@ mod tests {
         let item = file.iter().find(|e| e.0 == "Export as PDF…").expect("Export as PDF… in the File menu");
         assert_eq!(item.1, "file.exportPdf");
         assert!(gridcraft_engine::find_command("file.exportPdf").is_some());
+    }
+
+    #[test]
+    fn file_menu_lists_recent_workbooks_after_open() {
+        let tree = super::tree();
+        let (_, file) = tree.iter().find(|(title, _)| *title == "File").expect("File menu");
+        let open = file.iter().position(|e| e.1 == "file.open").expect("Open… in the File menu");
+        assert_eq!(file.get(open + 1).map(|e| e.1), Some(super::RECENT_MENU), "Open Recent follows Open…");
+    }
+
+    #[test]
+    fn recent_labels_name_the_folder_only_where_names_repeat() {
+        let paths = ["/a/Invoices/Rechnung.xlsx", "/b/Old/Rechnung.xlsx", "/a/Budget.xlsx", "Loose.csv"].map(String::from);
+        assert_eq!(super::recent_labels(&paths), ["Rechnung.xlsx — Invoices", "Rechnung.xlsx — Old", "Budget.xlsx", "Loose.csv"]);
     }
 
     #[test]

@@ -37,6 +37,20 @@ fn main() {
     let last = windows_menu.itemAtIndex(windows_menu.numberOfItems() - 1).expect("a Window menu item");
     assert_eq!(last.title().to_string(), open[0].label(), "the Window menu lists the open workbook");
 
+    // File › Open Recent lists the recent workbooks, newest first, and follows the list.
+    let file = (0..bar.numberOfItems()).filter_map(|i| bar.itemAtIndex(i)?.submenu()).find(|m| m.title().to_string() == "File").expect("a File menu");
+    let titles = |m: &objc2_app_kit::NSMenu| -> Vec<String> {
+        (0..m.numberOfItems()).filter_map(|i| m.itemAtIndex(i)).map(|it| it.title().to_string()).collect()
+    };
+    let recent = file.itemWithTitle(&objc2_foundation::NSString::from_str("Open Recent")).and_then(|it| it.submenu()).expect("File › Open Recent");
+    assert_eq!(titles(&recent), ["Clear Menu"], "nothing recent yet");
+    app.ui.recent = vec!["/books/Rechnung.xlsx".into(), "/books/Budget.xlsx".into()];
+    menu.poll(&mut app, &ctx, egui::ViewportId::ROOT);
+    assert_eq!(titles(&recent), ["Rechnung.xlsx", "Budget.xlsx", "", "Clear Menu"]);
+    app.ui.recent.clear();
+    menu.poll(&mut app, &ctx, egui::ViewportId::ROOT);
+    assert_eq!(titles(&recent), ["Clear Menu"], "Open Recent follows the cleared list");
+
     // A native Open or Save panel gets a standard Edit menu, so its name field takes ⌘V; the
     // GridCraft menu bar and its Window menu come back afterwards.
     let edit_keys = native_menu::with_text_editing_menu(|| {
