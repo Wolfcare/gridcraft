@@ -152,22 +152,44 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
                         let direction = crate::text_direction::cell_direction(order, &text);
                         child.painter().layout_job(egui::text::LayoutJob {
                             direction,
-                            ..egui::text::LayoutJob::simple(text, font.clone(), color, inner.width())
+                            ..egui::text::LayoutJob::simple(text.clone(), font.clone(), color, inner.width())
                         })
                     };
                     let lines = galley.rows.len();
                     // Each cell's view starts at its top: the offset is kept per cell, not per bar.
                     let shown = app.session.active().map(|d| (d.uid, d.wb.active_sheet(), d.selection.active.row, d.selection.active.col));
+                    // Where the text was clicked: the edit starts with the caret there, as in Excel.
+                    let mut click: Option<Option<usize>> = None;
+                    let mut text_rect = inner;
                     egui::ScrollArea::vertical().id_salt(id.with(("view", shown))).max_height(inner.height()).auto_shrink([false, true]).show(
                         &mut child,
                         |ui| {
-                            if ui.add(egui::Label::new(galley).sense(Sense::click())).clicked() && !read_only {
-                                app.begin_edit(None, true);
+                            let label = ui.add(egui::Label::new(galley.clone()).sense(Sense::click()));
+                            text_rect = label.rect;
+                            if label.clicked() && !read_only {
+                                click = Some(clicked_char(&galley, label.rect, label.interact_pointer_pos()));
                             }
                         },
                     );
-                    if !read_only && ui.interact(field, id.with("click"), Sense::click()).clicked() {
+                    let around = ui.interact(field, id.with("click"), Sense::click());
+                    if !read_only && around.clicked() {
+                        click = Some(clicked_char(&galley, text_rect, around.interact_pointer_pos()));
+                    }
+                    // The edit starts when the button goes down, as in Excel, not when it comes
+                    // back up: the caret is there at once, and a drag from it selects text. The
+                    // bar's bottom edge (its resize handle) is left to the resize.
+                    let press_area = field.with_max_y(field.bottom() - HANDLE);
+                    if !read_only && ui.input(|i| i.pointer.primary_pressed()) && ui.rect_contains_pointer(press_area) {
+                        click = Some(clicked_char(&galley, text_rect, ui.input(|i| i.pointer.interact_pos())));
+                    }
+                    if let Some(at) = click {
                         app.begin_edit(None, true);
+                        if place_caret(app, &text, at)
+                            && ui.input(|i| i.pointer.primary_down())
+                            && let Some(ed) = app.editor.as_ref()
+                        {
+                            ui.ctx().data_mut(|d| d.insert_temp(press_anchor_id(id), ed.caret));
+                        }
                     }
                     EditorInfo { lines, caret: None }
                 };
@@ -184,6 +206,60 @@ pub fn show(app: &mut SheetApp, ui: &mut egui::Ui) {
         });
     layout.handle = resize_handle(app, ui, panel.response.rect, row_h, most);
     ui.ctx().data_mut(|d| d.insert_temp(BarLayout::id(), layout));
+}
+
+/// The character a click at `pointer` lands before, in `galley` drawn at `rect`.
+fn clicked_char(galley: &egui::Galley, rect: Rect, pointer: Option<egui::Pos2>) -> Option<usize> {
+    let pointer = pointer?;
+    Some(galley.cursor_from_pos(pointer - rect.min).index.into())
+}
+
+/// Puts the caret of an edit just started from the formula bar at char `at` of `shown`, the text
+/// the bar displayed. Without this the caret lands at the end of the text wherever it was clicked.
+/// Returns whether the caret was placed.
+fn place_caret(app: &mut SheetApp, shown: &str, at: Option<usize>) -> bool {
+    let Some(at) = at else { return false };
+    let Some(ed) = app.editor.as_mut().filter(|ed| ed.from_formula_bar && !ed.python) else { return false };
+    // A legacy array formula shows in braces (`{=A1:A2*2}`) but is edited without them.
+    let at = if shown == ed.text {
+        at
+    } else if shown.strip_prefix('{').and_then(|s| s.strip_suffix('}')) == Some(ed.text.as_str()) {
+        at.saturating_sub(1)
+    } else {
+        return false;
+    };
+    ed.caret = at.min(ed.text.chars().count());
+    ed.anchor = ed.caret;
+    ed.sync_caret = true;
+    true
+}
+
+/// Where the press that started an edit in the bar put the caret, while that button stays down.
+fn press_anchor_id(bar: egui::Id) -> egui::Id {
+    bar.with("press_anchor")
+}
+
+/// A drag that began with the press starting the edit selects from the press to the pointer, as
+/// it would in a field that was already being edited. The field only appeared after the press, so
+/// it doesn't track that drag itself.
+fn extend_press_selection(ui: &egui::Ui, id: egui::Id, ed: &mut crate::editor::EditState, galley: &egui::Galley, galley_pos: egui::Pos2) {
+    let key = press_anchor_id(id);
+    let Some(anchor) = ui.ctx().data(|d| d.get_temp::<usize>(key)) else { return };
+    if !ui.input(|i| i.pointer.primary_down()) {
+        ui.ctx().data_mut(|d| d.remove::<usize>(key));
+        return;
+    }
+    let Some(pointer) = ui.input(|i| i.pointer.interact_pos()) else { return };
+    let to: usize = galley.cursor_from_pos(pointer - galley_pos).index.into();
+    let (anchor, to) = (anchor.min(ed.text.chars().count()), to.min(ed.text.chars().count()));
+    if (ed.anchor, ed.caret) != (anchor, to) {
+        ed.anchor = anchor;
+        ed.caret = to;
+        // Pushed into the field next frame as a selection, not a collapsed caret.
+        ed.keep_selection = true;
+        ed.request_focus = true;
+        ui.ctx().request_repaint();
+    }
 }
 
 /// The most lines the bar takes in a window `window_h` tall with `room` left under the ribbon:
@@ -587,6 +663,9 @@ pub fn editor_widget(app: &mut SheetApp, ui: &mut egui::Ui, id: egui::Id, font: 
     {
         ed.caret = r.primary.index.into();
         ed.anchor = r.secondary.index.into();
+    }
+    if !on_sheet && mine && !dialog_open {
+        extend_press_selection(ui, id, &mut ed, &output.galley, output.galley_pos);
     }
     if resp.changed() {
         ed.completion = None;
@@ -1104,6 +1183,96 @@ mod spill_tests {
             h.check_accessibility();
             assert!(h.state().editor.as_ref().is_some_and(|e| e.from_formula_bar));
         }
+    }
+
+    /// The first click into the bar put the caret at the end of the text wherever it landed, so a
+    /// second click was needed to edit the middle of a word.
+    #[test]
+    fn clicking_the_bar_starts_the_edit_with_the_caret_where_it_was_clicked() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut app = app();
+        set(&mut app, "A1", "Rossano");
+        select(&mut app, "A1");
+        let mut fonts_ready = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 100.0)).build_ui_state(
+            move |ui, app: &mut SheetApp| {
+                if !fonts_ready {
+                    ui.ctx().set_fonts(theme::font_definitions());
+                    fonts_ready = true;
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        // The middle of the word, not its end.
+        h.get_by_label("Rossano").click();
+        h.run_steps(3);
+        let ed = h.state().editor.as_ref().expect("the click starts an edit in the bar");
+        assert!(ed.from_formula_bar);
+        assert_eq!(ed.text, "Rossano");
+        assert!((1..7).contains(&ed.caret), "caret {} should be inside the word, not at its end", ed.caret);
+        assert_eq!(ed.anchor, ed.caret, "a click selects nothing");
+    }
+
+    /// As in Excel, the edit starts when the button goes down, and dragging on from there selects:
+    /// the field that appears after the press doesn't see that drag by itself.
+    #[test]
+    fn pressing_the_bar_starts_the_edit_and_a_drag_from_it_selects() {
+        use egui::{Event, Modifiers, PointerButton};
+        use egui_kittest::kittest::Queryable as _;
+        let mut app = app();
+        set(&mut app, "A1", "Rossano");
+        select(&mut app, "A1");
+        let mut fonts_ready = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 100.0)).build_ui_state(
+            move |ui, app: &mut SheetApp| {
+                if !fonts_ready {
+                    ui.ctx().set_fonts(theme::font_definitions());
+                    fonts_ready = true;
+                    return;
+                }
+                show(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let text = h.get_by_label("Rossano").rect();
+        let start = egui::pos2(text.left() + 1.0, text.center().y);
+        let end = egui::pos2(text.right() + 20.0, text.center().y);
+        let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        h.event(Event::PointerMoved(start));
+        h.step();
+        h.event(button(start, true));
+        h.step();
+        let ed = h.state().editor.as_ref().expect("the press, before any release, starts the edit");
+        assert_eq!(ed.caret, 0, "the caret is where the button went down");
+        for event in [Event::PointerMoved(end), Event::PointerMoved(end)] {
+            h.event(event);
+            h.step();
+        }
+        h.event(button(end, false));
+        h.run_steps(3);
+        let ed = h.state().editor.as_ref().expect("still editing after the release");
+        assert_eq!((ed.anchor, ed.caret), (0, 7), "the drag selected the whole word");
+        let state = egui::TextEdit::load_state(&h.ctx, egui::Id::unique("gridcraft.formula_bar")).expect("the field's state");
+        let range = state.cursor.char_range().expect("a selection in the field");
+        assert_eq!((usize::from(range.secondary.index), usize::from(range.primary.index)), (0, 7), "the field shows the selection");
+    }
+
+    #[test]
+    fn a_click_maps_through_an_array_formulas_braces() {
+        let mut app = app();
+        set(&mut app, "A1", "Rossano");
+        select(&mut app, "A1");
+        app.begin_edit(None, true);
+        place_caret(&mut app, "Rossano", Some(3));
+        assert_eq!(app.editor.as_ref().map(|e| (e.caret, e.anchor, e.sync_caret)), Some((3, 3, true)));
+        place_caret(&mut app, "{Rossano}", Some(4));
+        assert_eq!(app.editor.as_ref().map(|e| e.caret), Some(3), "the opening brace isn't in the edit");
+        place_caret(&mut app, "Rossano", Some(99));
+        assert_eq!(app.editor.as_ref().map(|e| e.caret), Some(7), "past the end clamps to the end");
     }
 }
 
