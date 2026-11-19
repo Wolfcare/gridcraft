@@ -1,6 +1,55 @@
 use super::{Json, Notice, NoticeKind, OpenWindow, SheetApp, clean_error, json};
 
 impl SheetApp {
+    /// Opens one of My templates as an untitled copy of the file: the workbook shows its contents,
+    /// but has no path, so Save asks where to put it and never overwrites the template.
+    pub fn open_template(&mut self, path: &str) {
+        let name = std::path::Path::new(path).file_name().map_or_else(|| "Book.xlsx".to_string(), |n| n.to_string_lossy().into_owned());
+        let opened = gridcraft_engine::io::read_file(path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| self.run("file.open", json!({"name": name, "base64": gridcraft_engine::io::base64_encode(&bytes)})));
+        match opened {
+            Ok(r) => self.after_open(None, &r),
+            Err(e) => self.message = Some(("GridCraft".into(), format!("The template {path} could not be opened.\n\n{}", clean_error(&e)))),
+        }
+        self.after_engine();
+    }
+
+    /// Opens the start template (launch, New Workbook) when one is chosen; false when none is,
+    /// and a blank workbook is wanted.
+    pub fn open_start_template(&mut self) -> bool {
+        let Some(path) = self.ui.start_template.clone().filter(|p| self.ui.templates.contains(p)) else { return false };
+        self.open_template(&path);
+        true
+    }
+
+    /// A blank workbook, whatever the start template: the Blank workbook tiles.
+    pub fn new_blank_workbook(&mut self) {
+        if let Err(e) = self.run("file.new", json!({})) {
+            self.alert(e);
+        }
+    }
+
+    /// Adds a workbook to My templates (at most [`crate::MAX_TEMPLATES`]; one already there stays
+    /// where it is). False when the list is full.
+    pub fn add_template(&mut self, path: &str) -> bool {
+        if self.ui.templates.iter().any(|p| p == path) {
+            return true;
+        }
+        if self.ui.templates.len() >= crate::MAX_TEMPLATES {
+            return false;
+        }
+        self.ui.templates.push(path.to_string());
+        true
+    }
+
+    /// Takes a workbook off My templates; it no longer opens at start either.
+    pub fn remove_template(&mut self, path: &str) {
+        self.ui.templates.retain(|p| p != path);
+        if self.ui.start_template.as_deref() == Some(path) {
+            self.ui.start_template = None;
+        }
+    }
     pub fn open_path(&mut self, path: &str) {
         match self.run("file.open", json!({"path": path})) {
             Ok(r) => self.after_open(Some(path), &r),
@@ -11,15 +60,20 @@ impl SheetApp {
         self.after_engine();
     }
 
+    /// Puts a workbook file at the top of Recent (File › Open, Open Recent).
+    pub fn note_recent(&mut self, path: &str) {
+        self.ui.recent.retain(|p| p != path);
+        self.ui.recent.insert(0, path.to_string());
+        self.ui.recent.truncate(20);
+    }
+
     /// What follows a successful `file.open`: the workbook shows (not the Backstage), the Recent
     /// list (for a file on disk) and the open warnings notice. Shared by File › Open, the
     /// password dialog and the control channel.
     pub fn after_open(&mut self, path: Option<&str>, r: &Json) {
         self.backstage = None;
         if let Some(path) = path {
-            self.ui.recent.retain(|p| p != path);
-            self.ui.recent.insert(0, path.to_string());
-            self.ui.recent.truncate(20);
+            self.note_recent(path);
         }
         self.show_open_warnings(r);
     }

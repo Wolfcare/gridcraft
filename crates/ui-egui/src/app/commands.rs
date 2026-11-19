@@ -60,6 +60,15 @@ impl SheetApp {
         let before = self.session.active_window();
         let zoom_from = matches!(id, "view.zoom" | "view.zoom100" | "view.zoomToSelection").then(|| crate::grid::Trace::key(self));
         let r = self.session.run(id, params);
+        // A workbook saved to a file goes to the top of Recent, like one opened: a new invoice
+        // saved with Save As is listed at once. (A PDF saved from Save As keeps the workbook's
+        // own path, so it is the workbook that is listed.)
+        if r.is_ok()
+            && matches!(id, "file.save" | "file.saveAs")
+            && let Some(path) = self.session.active().and_then(|d| d.path.clone())
+        {
+            self.note_recent(&path);
+        }
         if let Some(from) = zoom_from {
             crate::grid::Trace::keep_through_zoom(self, from);
         }
@@ -125,6 +134,11 @@ impl SheetApp {
                 return;
             }
             return self.print_now(params);
+        }
+        // New Workbook from the menu or Cmd+N opens the start template when one is chosen
+        // (File › New › My templates); programmatic callers of `run` still get a blank workbook.
+        if id == "file.new" && params.as_object().is_none_or(serde_json::Map::is_empty) && self.open_start_template() {
+            return;
         }
         // Menu-style Export as PDF with no file named: ask where to save, like Save As does.
         // Programmatic callers use `run` and keep getting the PDF bytes back.
