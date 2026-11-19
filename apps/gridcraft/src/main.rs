@@ -19,6 +19,8 @@ mod logging;
 mod native_menu;
 mod opener;
 mod print;
+#[cfg(target_os = "macos")]
+mod save_panel;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -174,21 +176,18 @@ fn services() -> Services {
             image::RgbaImage::from_raw(u32::try_from(image.width).ok()?, u32::try_from(image.height).ok()?, image.bytes.into_owned())
         })),
         pick_open: Some(Box::new(|| {
-            rfd::FileDialog::new()
+            let dialog = rfd::FileDialog::new()
                 .add_filter("Spreadsheets", &["xlsx", "xlsm", "xls", "xlsb", "ods", "csv", "tsv", "txt", "slk", "json"])
                 .add_filter("Excel Workbook", &["xlsx", "xlsm"])
                 .add_filter("Excel 97-2003 Workbook (import)", &["xls"])
                 .add_filter("Excel Binary Workbook (data import)", &["xlsb"])
                 .add_filter("OpenDocument Spreadsheet (data import)", &["ods"])
-                .add_filter("CSV", &["csv"])
-                .pick_file()
-                .and_then(|p| p.to_str().map(str::to_string))
+                .add_filter("CSV", &["csv"]);
+            pick_file_dialog(move || dialog.pick_file())
         })),
         pick_picture: Some(Box::new(|| {
-            rfd::FileDialog::new()
-                .add_filter("Pictures (PNG, JPEG)", &["png", "jpg", "jpeg"])
-                .pick_file()
-                .and_then(|p| p.to_str().map(str::to_string))
+            let dialog = rfd::FileDialog::new().add_filter("Pictures (PNG, JPEG)", &["png", "jpg", "jpeg"]);
+            pick_file_dialog(move || dialog.pick_file())
         })),
         pick_save: Some(Box::new(|suggested: &str| {
             let path = std::path::Path::new(suggested);
@@ -198,17 +197,39 @@ fn services() -> Services {
                 [("Excel Workbook (.xlsx)", "xlsx"), ("CSV UTF-8 (.csv)", "csv"), ("Web Page (.html)", "html"), ("PDF (.pdf)", "pdf")];
             let ext = path.extension().and_then(std::ffi::OsStr::to_str).map(str::to_ascii_lowercase).filter(|e| TYPES.iter().any(|(_, x)| x == e));
             let ext = ext.unwrap_or_else(|| "xlsx".to_string());
-            let mut dialog = rfd::FileDialog::new().set_file_name(format!("{stem}.{ext}"));
-            for (label, x) in TYPES.iter().filter(|(_, x)| *x == ext).chain(TYPES.iter().filter(|(_, x)| *x != ext)) {
-                dialog = dialog.add_filter(*label, &[*x]);
+            let name = format!("{stem}.{ext}");
+            let ordered: Vec<(&str, &str)> =
+                TYPES.iter().filter(|(_, x)| *x == ext).chain(TYPES.iter().filter(|(_, x)| *x != ext)).copied().collect();
+            // macOS: the panel's File Format menu offers each type, PDF included; a PDF chosen
+            // there is exported, and the workbook keeps its own file (`file.save`).
+            #[cfg(target_os = "macos")]
+            {
+                let extensions: Vec<&str> = ordered.iter().map(|(_, x)| *x).collect();
+                if let Some(picked) = native_menu::with_text_editing_menu(|| save_panel::pick(&name, &extensions)) {
+                    return picked.and_then(|p| p.to_str().map(str::to_string));
+                }
             }
-            dialog.save_file().and_then(|p| p.to_str().map(str::to_string))
+            let mut dialog = rfd::FileDialog::new().set_file_name(name);
+            for (label, x) in ordered {
+                dialog = dialog.add_filter(label, &[x]);
+            }
+            pick_file_dialog(move || dialog.save_file())
         })),
         open_url: Some(Box::new(|url: &str| open_with_system(url))),
         printers: Some(print::discover()),
         print_native: Some(print::submit()),
         ..Default::default()
     }
+}
+
+/// Shows a native file panel and returns the chosen path. On macOS the panel gets a standard Edit
+/// menu while it is open, so its name and search fields take ⌘V and the other text shortcuts.
+fn pick_file_dialog(show: impl FnOnce() -> Option<std::path::PathBuf>) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    let picked = native_menu::with_text_editing_menu(show);
+    #[cfg(not(target_os = "macos"))]
+    let picked = show();
+    picked.and_then(|p| p.to_str().map(str::to_string))
 }
 
 /// Opens a URL or file with the system's default application.

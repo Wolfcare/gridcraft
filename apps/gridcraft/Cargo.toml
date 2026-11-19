@@ -54,10 +54,25 @@ muda = { version = "0.21", default-features = false }
 # by PdfCraft and PhotoCraft) registers the handler (Objective-C interop needs unsafe, which our
 # workspace forbids) behind a safe API. Pinned exactly: review the diff before bumping.
 fmv-macos-events = "=0.1.0"
-# apple_events.rs brings the app forward for a Dock quit's question. Already in Cargo.lock (muda,
-# winit); pinned exactly to the same versions.
+# apple_events.rs brings the app forward for a Dock quit's question; native_menu.rs swaps in a
+# standard Edit menu while a file panel is open. Already in Cargo.lock (muda, winit); pinned exactly
+# to the same versions.
 objc2 = "=0.6.5"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSMenu",
+    "NSPanel",
+    "NSResponder",
+    "NSSavePanel",
+    "NSWindow",
+    "objc2-uniform-type-identifiers",
+] }
+# save_panel.rs: the Save panel's File Format menu (Excel Workbook, CSV, Web Page, PDF) names
+# its types as UTTypes. Same objc2 family and versions as objc2-app-kit 0.3.2 (Zlib OR
+# Apache-2.0 OR MIT); pinned exactly.
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
+objc2-uniform-type-identifiers = { version = "=0.3.2", default-features = false, features = ["std", "UTType"] }
 
 # tests/mac_menu_appkit.rs: reads AppKit's menu bar back. Already in Cargo.lock (muda, winit);
 # pinned exactly to the same versions.

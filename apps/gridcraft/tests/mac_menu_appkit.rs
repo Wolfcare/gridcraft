@@ -37,6 +37,22 @@ fn main() {
     let last = windows_menu.itemAtIndex(windows_menu.numberOfItems() - 1).expect("a Window menu item");
     assert_eq!(last.title().to_string(), open[0].label(), "the Window menu lists the open workbook");
 
+    // A native Open or Save panel gets a standard Edit menu, so its name field takes ⌘V; the
+    // GridCraft menu bar and its Window menu come back afterwards.
+    let edit_keys = native_menu::with_text_editing_menu(|| {
+        let bar = nsapp.mainMenu().expect("a main menu while the panel is open");
+        let edit =
+            (0..bar.numberOfItems()).filter_map(|i| bar.itemAtIndex(i)?.submenu()).find(|m| m.title().to_string() == "Edit").expect("an Edit menu");
+        (0..edit.numberOfItems()).filter_map(|i| edit.itemAtIndex(i)).map(|item| item.keyEquivalent().to_string()).collect::<Vec<_>>()
+    });
+    for key in ["v", "c", "x", "a", "z"] {
+        assert!(edit_keys.iter().any(|k| k == key), "the panel's Edit menu has ⌘{key}: {edit_keys:?}");
+    }
+    let bar = nsapp.mainMenu().expect("the main menu is back");
+    let restored: Vec<String> = (0..bar.numberOfItems()).filter_map(|i| bar.itemAtIndex(i)?.submenu()).map(|m| m.title().to_string()).collect();
+    assert_eq!(restored, tops, "the GridCraft menu bar is restored after the panel");
+    assert_eq!(nsapp.windowsMenu().expect("the Window menu is still AppKit's").title().to_string(), "Window");
+
     println!("mac_menu_appkit: ok");
 }
 

@@ -7,7 +7,48 @@ use std::sync::mpsc::{Receiver, channel};
 use gridcraft_ui_egui::{OpenWindow, SheetApp};
 use muda::accelerator::Accelerator;
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSApplication;
 use serde_json::{Value, json};
+
+/// A menu bar whose Edit menu sends AppKit's standard text actions (`undo:`, `cut:`, `copy:`,
+/// `paste:`, `selectAll:`) to the first responder.
+fn text_editing_menu() -> Menu {
+    let menu = Menu::new();
+    let app_menu = Submenu::new("GridCraft", true);
+    let _ = app_menu.append_items(&[&PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None)]);
+    let edit = Submenu::new("Edit", true);
+    let _ = edit.append_items(&[
+        &PredefinedMenuItem::undo(None),
+        &PredefinedMenuItem::redo(None),
+        &PredefinedMenuItem::separator(),
+        &PredefinedMenuItem::cut(None),
+        &PredefinedMenuItem::copy(None),
+        &PredefinedMenuItem::paste(None),
+        &PredefinedMenuItem::select_all(None),
+    ]);
+    let _ = menu.append_items(&[&app_menu, &edit]);
+    menu
+}
+
+/// Runs `show`, which presents a native Open or Save panel, with a standard Edit menu in the menu
+/// bar, then puts the previous menu bar back.
+///
+/// A panel's file name field takes ⌘V, ⌘C, ⌘X, ⌘A and ⌘Z only through the main menu's key
+/// equivalents for `paste:` and the other text actions. GridCraft's own Edit items run worksheet
+/// commands instead, so without this a name could not be pasted into the Save panel.
+pub fn with_text_editing_menu<T>(show: impl FnOnce() -> T) -> T {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return show();
+    };
+    let nsapp = NSApplication::sharedApplication(mtm);
+    let previous = nsapp.mainMenu();
+    let menu = text_editing_menu();
+    menu.init_for_nsapp();
+    let picked = show();
+    nsapp.setMainMenu(previous.as_deref());
+    picked
+}
 
 type Entry = (&'static str, &'static str, Option<&'static str>);
 
