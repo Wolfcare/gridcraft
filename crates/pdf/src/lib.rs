@@ -251,6 +251,10 @@ impl Font {
         }
         match c {
             '—' | '…' | '‰' | '™' => 1000,
+            // The fonts viewers substitute for the unembedded Helvetica and Times (macOS's own,
+            // for one) draw a € about 0.74 em wide; with a digit's width the next digit lands on
+            // it. A little extra space where a viewer's € is narrower is the lesser fault.
+            '€' => EURO_WIDTH,
             _ => metrics::fold(c).and_then(ascii).unwrap_or(match self {
                 Font::TimesRoman | Font::TimesItalic | Font::TimesBold | Font::TimesBoldItalic => 500,
                 _ => 556,
@@ -285,43 +289,71 @@ pub fn text_width_with_direction(font: Font, size: f32, text: &str, direction: T
     units as f32 * size / 1000.0
 }
 
+/// The characters WinAnsiEncoding (CP1252) places at 0x80..=0x9F. 0x81, 0x8D, 0x8F, 0x90 and 0x9D
+/// are unassigned.
+const WIN_ANSI_HIGH: [(char, u8); 27] = [
+    ('€', 0x80),
+    ('‚', 0x82),
+    ('ƒ', 0x83),
+    ('„', 0x84),
+    ('…', 0x85),
+    ('†', 0x86),
+    ('‡', 0x87),
+    ('ˆ', 0x88),
+    ('‰', 0x89),
+    ('Š', 0x8A),
+    ('‹', 0x8B),
+    ('Œ', 0x8C),
+    ('Ž', 0x8E),
+    ('‘', 0x91),
+    ('’', 0x92),
+    ('“', 0x93),
+    ('”', 0x94),
+    ('•', 0x95),
+    ('–', 0x96),
+    ('—', 0x97),
+    ('˜', 0x98),
+    ('™', 0x99),
+    ('š', 0x9A),
+    ('›', 0x9B),
+    ('œ', 0x9C),
+    ('ž', 0x9E),
+    ('Ÿ', 0x9F),
+];
+
 /// Unicode → WinAnsiEncoding (CP1252) byte; unmappable characters become `?`.
 pub fn win_ansi(c: char) -> u8 {
     let u = c as u32;
     if (0x20..0x7F).contains(&u) || (0xA0..=0xFF).contains(&u) {
         return u as u8;
     }
-    match c {
-        '€' => 0x80,
-        '‚' => 0x82,
-        'ƒ' => 0x83,
-        '„' => 0x84,
-        '…' => 0x85,
-        '†' => 0x86,
-        '‡' => 0x87,
-        'ˆ' => 0x88,
-        '‰' => 0x89,
-        'Š' => 0x8A,
-        '‹' => 0x8B,
-        'Œ' => 0x8C,
-        'Ž' => 0x8E,
-        '‘' => 0x91,
-        '’' => 0x92,
-        '“' => 0x93,
-        '”' => 0x94,
-        '•' => 0x95,
-        '–' => 0x96,
-        '—' => 0x97,
-        '˜' => 0x98,
-        '™' => 0x99,
-        'š' => 0x9A,
-        '›' => 0x9B,
-        'œ' => 0x9C,
-        'ž' => 0x9E,
-        'Ÿ' => 0x9F,
-        '\t' => b' ',
-        _ => b'?',
+    if c == '\t' {
+        return b' ';
     }
+    WIN_ANSI_HIGH.iter().find(|(ch, _)| *ch == c).map_or(b'?', |(_, b)| *b)
+}
+
+/// WinAnsiEncoding byte → the character it draws, `None` for control and unassigned codes.
+fn win_ansi_char(b: u8) -> Option<char> {
+    match b {
+        0x20..=0x7E | 0xA0..=0xFF => Some(char::from(b)),
+        _ => WIN_ANSI_HIGH.iter().find(|(_, code)| *code == b).map(|(ch, _)| *ch),
+    }
+}
+
+/// The `/FirstChar 32 /LastChar 255 /Widths [ … ]` entries of a WinAnsiEncoding standard font:
+/// the advances GridCraft lays text out with. Without them a viewer uses its own metrics for the
+/// standard 14 fonts, and some (macOS Preview among them) have none for codes such as € (0x80),
+/// so the next character is drawn over it.
+fn win_ansi_widths(font: Font) -> String {
+    let mut widths = String::with_capacity(224 * 4 + 40);
+    widths.push_str(" /FirstChar 32 /LastChar 255 /Widths [");
+    for b in 32..=255u8 {
+        let w = win_ansi_char(b).map_or(0, |c| font.char_width(c));
+        let _ = write!(widths, "{}{w}", if b == 32 { "" } else { " " });
+    }
+    widths.push(']');
+    widths
 }
 
 /// Index of the CID font in a page's font flags (after the [`Font::ALL`] faces).
@@ -332,6 +364,10 @@ const FONT_SLOTS: usize = CID_FONT + 1;
 const CID_BASE_FONT: &str = "STSong-Light";
 /// Default glyph width of the CID font (full-width), in 1/1000 em.
 const CID_WIDTH: u16 = 1000;
+
+/// Advance of the euro sign in the proportional standard faces, in 1/1000 em: the width of the € that
+/// macOS draws for them, so it never overlaps the next character.
+const EURO_WIDTH: u16 = 744;
 
 /// True when `c` has no WinAnsiEncoding byte and is drawn with the CID font.
 fn needs_cid(c: char) -> bool {
@@ -1123,8 +1159,9 @@ impl PdfDoc {
                     )?;
                     continue;
                 }
-                let name = Font::ALL.get(i).copied().unwrap_or_default().base_name();
-                let enc = if name.starts_with("Symbol") { "" } else { " /Encoding /WinAnsiEncoding" };
+                let font = Font::ALL.get(i).copied().unwrap_or_default();
+                let name = font.base_name();
+                let enc = if name.starts_with("Symbol") { String::new() } else { format!(" /Encoding /WinAnsiEncoding{}", win_ansi_widths(font)) };
                 out.object(*id, &format!("<< /Type /Font /Subtype /Type1 /BaseFont /{name}{enc} >>"))?;
             }
         }

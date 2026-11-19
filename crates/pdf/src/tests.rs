@@ -114,6 +114,45 @@ fn drawing_and_text() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// macOS Preview draws the unembedded Helvetica's € 0.744 em wide: with a digit's width the next
+/// digit was drawn over the €. Each standard font states the advances GridCraft laid the text out
+/// with, and the € is given room for that glyph.
+#[test]
+fn standard_fonts_state_their_widths_so_the_euro_sign_keeps_its_space() -> Result<(), Box<dyn Error>> {
+    let mut d = PdfDoc::new();
+    let p = d.add_page(612.0, 792.0);
+    p.text(72.0, 72.0, 10.0, Font::Helvetica, [0, 0, 0], "€200.00");
+    p.text(72.0, 90.0, 10.0, Font::HelveticaBold, [0, 0, 0], "€168.07");
+    let pdf = d.finish()?;
+    check_xref(&pdf)?;
+    for name in ["Helvetica", "Helvetica-Bold"] {
+        let head = format!("/BaseFont /{name} /Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 255 /Widths [");
+        let at = find(&pdf, head.as_bytes()).ok_or(format!("{name} has no /Widths"))? + head.len();
+        let end = at + find(&pdf[at..], b"]").ok_or("unterminated /Widths")?;
+        let widths: Vec<u16> = std::str::from_utf8(&pdf[at..end])?.split(' ').map(str::parse).collect::<Result<_, _>>()?;
+        assert_eq!(widths.len(), 224, "{name}: one width per code 32..=255");
+        let font = if name == "Helvetica" { Font::Helvetica } else { Font::HelveticaBold };
+        assert_eq!(widths[0x80 - 32], font.char_width('€'), "{name}: € (0x80) has its laid-out width");
+        assert_eq!(widths[0x80 - 32], 744, "{name}: € has room for the widest € a viewer substitutes");
+        assert_eq!(widths[usize::from(b'A') - 32], font.char_width('A'));
+        assert_eq!(widths[0xDF - 32], font.char_width('ß'));
+        assert_eq!(widths[0x81 - 32], 0, "{name}: an unassigned code has no width");
+    }
+    Ok(())
+}
+
+#[test]
+fn win_ansi_round_trips_every_assigned_code() {
+    for b in 32..=255u8 {
+        if let Some(c) = win_ansi_char(b) {
+            assert_eq!(win_ansi(c), b, "{c:?}");
+        }
+    }
+    assert_eq!(win_ansi('\t'), b' ');
+    assert_eq!(win_ansi('€'), 0x80);
+    assert_eq!(win_ansi('编'), b'?');
+}
+
 #[test]
 fn uri_and_page_links_are_real_pdf_annotations() -> Result<(), Box<dyn Error>> {
     let mut d = PdfDoc::new();
