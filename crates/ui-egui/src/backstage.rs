@@ -557,6 +557,8 @@ fn home(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome) 
     section(ui, lang, "New");
     new_tiles(app, ui, out);
     ui.add_space(22.0);
+    my_templates(app, ui, out);
+    ui.add_space(22.0);
     section(ui, lang, "Recent");
     recent_list(app, ui, bs, out, 8);
     if app.ui.recent.len() > 8 {

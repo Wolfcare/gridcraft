@@ -157,3 +157,24 @@ fn file_new_shows_my_templates_with_add_open_at_start_and_remove() {
     assert_eq!(h.state().session.active().unwrap().path, None);
     assert!(h.state().backstage.is_none(), "the File page closed");
 }
+
+#[test]
+fn file_home_shows_my_templates_between_new_and_recent() {
+    use egui_kittest::kittest::Queryable as _;
+    let dir = dir("home");
+    let template = workbook(&dir, "Rechnung.xlsx", "Invoice");
+    let services = Services { pick_open: Some(Box::new(|| None)), ..Default::default() };
+    let mut h = crate::support::services_harness(services, 2);
+    h.state_mut().add_template(&template);
+    h.state_mut().run("ui.backstage", json!({"page": "home"})).unwrap();
+    h.run_steps(3);
+    if let Ok(path) = std::env::var("GRIDCRAFT_MY_TEMPLATES_HOME_SCREENSHOT") {
+        h.render().unwrap().save(path).unwrap();
+    }
+    let top = |label: &str| h.get_by_label(label).rect().top();
+    assert!(top("Blank workbook") < top("My templates"), "below New");
+    assert!(top("My templates") < top("Recent"), "above Recent");
+    h.get_by_label("Rechnung").click();
+    h.run_steps(3);
+    assert_eq!(a1(h.state()), Value::Text("Invoice".into()));
+}
